@@ -329,28 +329,32 @@ const engine = new Engine(GODOT_CONFIG);
 		try { list = await (await fetch(phone ? 'packs_mobile.json' : 'packs.json', { cache: 'no-store' })).json(); } catch (e) { return; }
 		if (!list || !list.packs || !list.packs.length) return;
 		const state = window.ccPacks = { ready: [], total: list.packs.length, done: false };
-		const cacheName = 'cc-items-' + list.build;
+		// One cache for all packs; each is kept under its name + size + hash, so when one pack
+		// changes only that one is fetched again.
+		const key = (pack) => pack.file + '?v=' + pack.size + '-' + (pack.hash || '');
 		let cache = null;
 		try {
-			cache = await caches.open(cacheName);
-			for (const old of await caches.keys()) if (old.startsWith('cc-items-') && old !== cacheName) await caches.delete(old);
+			for (const old of await caches.keys()) if (old.startsWith('cc-items-')) await caches.delete(old);
+			cache = await caches.open('cc-packs');
+			const want = new Set(list.packs.map((pack) => new URL(key(pack), location.href).href));
+			for (const req of await cache.keys()) if (!want.has(req.url)) await cache.delete(req);
 		} catch (e) { cache = null; }
 		for (const pack of list.packs) {
 			let bytes = null;
 			for (let attempt = 0; attempt < 4 && !bytes; attempt++) {
 				try {
-					let res = cache ? await cache.match(pack.file) : null;
+					let res = cache ? await cache.match(key(pack)) : null;
 					if (!res) {
-						res = await fetch(pack.file);
+						res = await fetch(key(pack));
 						if (!res.ok) throw new Error(pack.file + ': ' + res.status);
-						if (cache) cache.put(pack.file, res.clone()).catch(() => {});
+						if (cache) cache.put(key(pack), res.clone()).catch(() => {});
 					}
 					const got = new Uint8Array(await res.arrayBuffer());
 					if (got.length !== pack.size) throw new Error(pack.file + ' incomplete');
 					bytes = got;
 				} catch (e) {
 					console.warn('Item pack', e && e.message);
-					if (cache) await cache.delete(pack.file).catch(() => {});
+					if (cache) await cache.delete(key(pack)).catch(() => {});
 					await new Promise((r) => setTimeout(r, 3000 * (attempt + 1)));
 				}
 			}
